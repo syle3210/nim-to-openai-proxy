@@ -16,12 +16,10 @@ if (!NIM_API_KEY) {
 app.use(cors());
 app.use(express.json({ limit: '20mb' }));
 
-// Simple health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', message: 'Minimal proxy running' });
 });
 
-// Models endpoint (optional but useful)
 app.get('/v1/models', (req, res) => {
   res.json({
     object: 'list',
@@ -36,20 +34,16 @@ app.get('/v1/models', (req, res) => {
   });
 });
 
-// Main endpoint – almost pure passthrough
 app.post('/v1/chat/completions', async (req, res) => {
-  console.log(`[REQUEST] model=\( {req.body.model || 'none'} stream= \){!!req.body.stream}`);
+  console.log('[REQUEST] model=' + (req.body.model || 'none') + ' stream=' + !!req.body.stream);
 
   try {
-    // Copy the body exactly as Janitor sent it
     const body = { ...req.body };
 
-    // Only force the real model name if needed
     if (!body.model || body.model === 'google-light' || body.model === 'gemma') {
       body.model = 'google/gemma-4-31b-it';
     }
 
-    // Remove any leftover thinking/reasoning fields the old proxy used to inject
     delete body.extra_body;
     delete body.chat_template_kwargs;
     delete body.thinking;
@@ -59,8 +53,44 @@ app.post('/v1/chat/completions', async (req, res) => {
 
     const response = await axios({
       method: 'post',
-      url: `${NIM_API_BASE}/chat/completions`,
+      url: NIM_API_BASE + '/chat/completions',
       data: body,
       headers: {
-        'Authorization': `Bearer ${NIM_API_KEY}`,
-        'Content-Type': '
+        'Authorization': 'Bearer ' + NIM_API_KEY,
+        'Content-Type': 'application/json',
+        'Accept': isStream ? 'text/event-stream' : 'application/json'
+      },
+      responseType: isStream ? 'stream' : 'json',
+      timeout: 300000,
+      validateStatus: () => true
+    });
+
+    res.status(response.status);
+
+    if (isStream) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      response.data.pipe(res);
+    } else {
+      res.json(response.data);
+    }
+
+  } catch (err) {
+    console.error('[ERROR]', err.message);
+    if (err.response) {
+      res.status(err.response.status).json(err.response.data);
+    } else {
+      res.status(500).json({
+        error: {
+          message: err.message || 'Proxy error',
+          type: 'proxy_error'
+        }
+      });
+    }
+  }
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log('Minimal NIM proxy running on port ' + PORT);
+});
